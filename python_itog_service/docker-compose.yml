@@ -1,0 +1,145 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:14
+    environment:
+      POSTGRES_USER: myuser
+      POSTGRES_PASSWORD: mypassword
+      POSTGRES_DB: mydatabase
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data_py:/var/lib/postgresql/data
+
+  mysql:
+    image: mysql:9.0
+    environment:
+      #MYSQL_ALLOW_EMPTY_PASSWORD: "No"
+      MYSQL_ROOT_PASSWORD: mypassword
+      MYSQL_PASSWORD: mypassword
+      MYSQL_DATABASE: mydatabase
+      MYSQL_USER: myuser
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data_py:/var/lib/mysql
+    #command: --skip-grant-tables & mysql_upgrade -uroot -pmypassword
+
+  airflow-init:
+    image: apache/airflow:2.7.3
+    depends_on:
+      - postgres
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__FERNET_KEY: '3QDvfPpqFcapb4yzFeesg_sZwcUjXxxzDjlNCErhJzk='
+      AIRFLOW__WEBSERVER__SECRET_KEY: '3QDvfPpqFcapb4yzFeesg_sZwcUjXxxzDjlNCErhJzk='
+      AIRFLOW_CONN_POSTGRES_DEFAULT: postgresql+psycopg2://myuser:mypassword@postgres:5432/mydatabase
+      AIRFLOW__CONN__MYSQL_DEFAULT: mysql://myuser:mypassword@mysql/mydatabase
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://myuser:mypassword@postgres/mydatabase
+      AIRFLOW_UID: 50000
+      AIRFLOW_GID: 50000
+    command: [ "db", "init" ]
+
+  airflow-webserver:
+    image: apache/airflow:2.7.3
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__FERNET_KEY: '3QDvfPpqFcapb4yzFeesg_sZwcUjXxxzDjlNCErhJzk='
+      AIRFLOW__WEBSERVER__SECRET_KEY: '3QDvfPpqFcapb4yzFeesg_sZwcUjXxxzDjlNCErhJzk='
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://myuser:mypassword@postgres:5432/mydatabase
+      AIRFLOW_CONN_POSTGRES_DEFAULT: postgresql+psycopg2://myuser:mypassword@postgres:5432/mydatabase
+      AIRFLOW__CONN__MYSQL_DEFAULT: mysql://myuser:mypassword@mysql/mydatabase
+      #AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://myuser:mypassword@postgres:5432/mydatabase
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__DATABASE__LOAD_DEFAULT_CONNECTIONS: False
+      AIRFLOW_UID: 50000
+      AIRFLOW_GID: 50000
+    depends_on:
+      - postgres
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./dags:/opt/airflow/dags
+    command: [ "webserver" ]
+
+  airflow-scheduler:
+    image: apache/airflow:2.7.3
+    depends_on:
+      - postgres
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__WEBSERVER__SECRET_KEY: '3QDvfPpqFcapb4yzFeesg_sZwcUjXxxzDjlNCErhJzk='
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://myuser:mypassword@postgres/mydatabase
+      AIRFLOW_CONN_POSTGRES_DEFAULT: postgresql+psycopg2://myuser:mypassword@postgres:5432/mydatabase
+      AIRFLOW__CONN__MYSQL_DEFAULT: mysql://myuser:mypassword@mysql/mydatabase
+      AIRFLOW__DATABASE__LOAD_DEFAULT_CONNECTIONS: False
+      AIRFLOW_UID: 50000
+      AIRFLOW_GID: 50000
+    command: [ "scheduler" ]
+    volumes:
+      - ./dags:/opt/airflow/dags
+
+  # Zookeeper для Kafka.
+  zookeeper:
+    image: wurstmeister/zookeeper:3.4.6
+    ports:
+      - "2181:2181"
+
+  # Kafka.
+  kafka:
+    image: wurstmeister/kafka:latest
+    environment:
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: INSIDE://kafka:9092,OUTSIDE://localhost:9093
+      KAFKA_LISTENERS: INSIDE://0.0.0.0:9092,OUTSIDE://0.0.0.0:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INSIDE:PLAINTEXT,OUTSIDE:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INSIDE  # Укажите имя слушателя для межброкерского общения
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    volumes:
+      - kafka-data:/opt/kafka/data
+
+  spark:
+    build:
+      context: ./spark  # Укажите путь к вашему Dockerfile для Spark.
+    environment:
+      - SPARK_MODE=master
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+      - SPARK_USER=spark
+    ports:
+      - "8081:8081"
+    depends_on:
+      - kafka
+      - postgres
+
+  spark-master:
+    image: bitnami/spark:3.5.4
+    command: [ "spark-master" ]
+    ports:
+      - "7077:7077"
+
+  spark-worker:
+    image: bitnami/spark:3.5.4
+    command: [ "spark-worker", "spark://spark-master:7077" ]
+    depends_on:
+      - spark-master
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark:7077
+      - SPARK_WORKER_MEMORY=1G
+      - SPARK_WORKER_CORES=1
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+      - SPARK_USER=spark
+
+volumes:
+  pg_data_py:
+  mysql_data_py:
+  kafka-data:
